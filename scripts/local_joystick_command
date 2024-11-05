@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+"""
+Inputs a Joy messages and produces controls
+that match the control_interface
+"""
+import rospy
+import time
+import math
+from geometry_msgs.msg import PointStamped, Twist, TwistStamped
+from std_msgs.msg import UInt8, Bool, String
+from sensor_msgs.msg import Joy
+import math
+
+class JoystickCommandSource():
+    def __init__(self):
+        # Axes for control
+        self.a_button = 0
+        self.b_button = 1
+        self.x_button = 2
+        self.y_button = 3
+        self.lb_button = 4
+        self.rb_button = 5
+        self.back_button = 6
+        self.start_button = 7
+        self.xbox_button = 8
+        self.left_joystick_button = 9
+        self.right_joystick_button = 10
+
+        self.max_button = 10
+
+        self.left_joystick_x = 0
+        self.left_joystick_y = 1
+        self.left_trigger = 2
+        self.right_joystick_x = 3
+        self.right_joystick_y = 4
+        self.right_trigger = 5
+        self.dpad_left_right = 6
+        self.dpad_up_down = 7
+        self.max_idx = 7
+
+
+        self.output_topic = rospy.get_param("~cmd_vel_topic")
+        print("self.output_topic: ", self.output_topic)
+        self.exploration_trigger_debounce = rospy.get_param("~exploration_trigger_debounce", 5.)
+
+
+        self.last_arm_disarm_time = None
+
+        # Arming
+        self.arm_button_pressed = False
+        self.system_arm_state_at_press = False
+        self.system_armed = False
+
+        # Input
+        self.joystick_sub = rospy.Subscriber("joy", Joy, self.joyCallback)
+
+        # # System Feedback
+        # self.arm_state_sub = rospy.Subscriber("executive/armed", Bool, self.armedCallback)
+
+        # # Control Interface
+        # self.authority_request_pub = rospy.Publisher("command/request_authority", String, queue_size=1)
+        # self.joystick_pub = rospy.Publisher("%s/command/joy"%self.authority_name, Joy, queue_size=1)
+        # self.state_pub = rospy.Publisher("%s/command/mode"%self.authority_name, UInt8, queue_size=1)
+
+        self.arm_pub = rospy.Publisher("status/arm", Bool, queue_size=1)
+        
+        self.cmd_vel_pub = rospy.Publisher(self.output_topic , Twist, queue_size=1) # might need to change to TwistStamped for saftety check
+
+    def run(self):
+        rospy.spin()
+
+    def armedCallback(self, msg):
+        self.system_armed = msg.data
+
+    def joyCallback(self, msg):
+        print("in call back")
+        bad = False
+        if self.max_idx >= len(msg.axes):
+            # rospy.logerror_throttle(2, "Joystick message does not have enough axes")
+            rospy.loginfo("Joystick message does not have enough axes")
+            bad = True
+        if self.max_button >= len(msg.buttons):
+            # rospy.logerror_throttle(2, "Joystick message does not have enough buttons")
+            rospy.loginfo("Joystick message does not have enough buttons")
+            bad = True
+
+        if bad:
+            return
+
+        arm_disarm = msg.buttons[self.rb_button]
+        # Handle arming / disarming
+        if arm_disarm:
+            if not self.arm_button_pressed:
+
+                self.system_arm_state_at_press = self.system_armed
+                
+                arm_msg = Bool()
+                arm_msg.data = not self.system_armed 
+                if( self.last_arm_disarm_time is None):
+                    self.arm_pub.publish(arm_msg)
+                    self.last_arm_disarm_time = time.time()
+                    rospy.loginfo( "Attempting to %s"%("arm" if not self.system_armed else "disarm"))
+                elif (time.time() - self.last_arm_disarm_time > 3.0):
+                    self.arm_pub.publish(arm_msg)
+                    self.last_arm_disarm_time = time.time()
+                    rospy.loginfo( "Attempting to %s"%("arm" if not self.system_armed else "disarm"))
+                else:
+                    rospy.loginfo( "arm_disarm too frequent!!!" )
+
+            self.arm_button_pressed = True
+        else:
+            self.arm_button_pressed = False
+
+
+        # generate cmd_vel
+        left_joystick_x = msg.axes[ self.left_joystick_x]
+        left_joystick_y = msg.axes[self.left_joystick_y]
+        left_trigger = msg.axes[self.left_trigger]
+
+        right_joystick_x = msg.axes[self.right_joystick_x]
+        right_joystick_y = msg.axes[self.right_joystick_y]
+        right_trigger = msg.axes[self.right_trigger]
+
+        twist_cmd_msg = Twist()
+
+        orientation = right_joystick_x
+
+        velocity = left_joystick_y * 2.0
+
+        twist_cmd_msg.angular.x = 0.0
+        twist_cmd_msg.angular.y = 0.0
+        twist_cmd_msg.angular.z = orientation
+        # twist_cmd_msg.angular.z = right_joystick_x * 3.14151265
+        
+
+        twist_cmd_msg.linear.x = velocity
+        twist_cmd_msg.linear.y = 0.0        
+        twist_cmd_msg.linear.z = 0.0
+
+        self.cmd_vel_pub.publish(twist_cmd_msg)
+
+
+if __name__ == "__main__":
+    rospy.init_node("joystick_coontrol_node")
+    node = JoystickCommandSource()
+    node.run()
